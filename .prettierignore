@@ -1,0 +1,10 @@
+# Ignore artifacts:
+.yarn
+.next
+.expo
+.amplify
+.vercel
+node_modules
+build
+lib
+coverage

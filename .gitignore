@@ -41,3 +41,9 @@ app-example
 # generated native folders
 /ios
 /android
+
+# amplify
+node_modules
+.amplify
+amplify_outputs*
+amplifyconfiguration*
