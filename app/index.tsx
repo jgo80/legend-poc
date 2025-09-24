@@ -1,49 +1,76 @@
-import { observable } from '@legendapp/state';
-import { For, observer, use$ } from '@legendapp/state/react';
+import { globalStore$, todos$ } from '@/stores';
+import { For, observer } from '@legendapp/state/react';
+import { fetchAuthSession, signIn } from 'aws-amplify/auth';
+import { DateTime } from 'luxon';
+import { useEffect, useRef } from 'react';
 import { Button, Text, View } from 'react-native';
-
-interface Store {
-  dates: string[];
-  firstDate?: string;
-  lastDate?: string;
-  count: number;
-  addDate: (date: string) => void;
-}
-
-const store$ = observable<Store>({
-  dates: [],
-  firstDate: (): string => {
-    return store$.dates.get()[0];
-  },
-  lastDate: (): string => {
-    const dates = store$.dates.get();
-    return dates[dates.length - 1];
-  },
-  count: (): number => {
-    return store$.dates.length;
-  },
-  addDate: () => {
-    store$.dates.push(new Date().toISOString());
-  },
-});
+import { uuid } from 'short-uuid';
 
 const Page = observer(() => {
-  const count = use$(store$.count);
-  const firstDate = use$(store$.firstDate);
-  const lastDate = use$(store$.lastDate);
+  const renderCount = ++useRef(0).current;
+
+  const addTodo = () => {
+    const id = uuid();
+    todos$[id].set({ id, title: 'New Todo', completed: false });
+  };
+
+  const deleteTodo = (id: string) => {
+    todos$[id].delete();
+  };
+
+  useEffect(() => {
+    // signUp({ username: 'mail@joey.aero', password: '$Password123' });
+    // confirmSignUp({ username: 'mail@joey.aero', confirmationCode: '855805' });
+    fetchAuthSession().then((session) => {
+      if (session.userSub) {
+        globalStore$.signedIn.set(true);
+      }
+    });
+  }, []);
 
   return (
-    <View>
-      <Text>Count: {count}</Text>
-      <Button
-        title="Add Date"
-        onPress={() => {
-          store$.addDate(new Date().toISOString());
-        }}
-      />
-      <Text>First Date: {firstDate}</Text>
-      <Text>Last Date: {lastDate}</Text>
-      <For each={store$.dates}>{(date$) => <Text>{date$.get()}</Text>}</For>
+    <View style={{ flex: 1, justifyContent: 'space-between' }}>
+      <View>
+        <Button
+          title={'Sign In'}
+          onPress={() => {
+            signIn({ username: 'mail@joey.aero', password: '$Password123' });
+          }}
+        />
+        <Button title={'Add Todo'} onPress={addTodo} />
+        <For
+          each={todos$}
+          sortValues={(a, b) =>
+            DateTime.fromISO(a.createdAt).toMillis() -
+            DateTime.fromISO(b.createdAt).toMillis()
+          }
+        >
+          {(todo$) => (
+            <Text>
+              {todo$.id.get().split('-')[1]} - {todo$.title.get()}-{' '}
+              {DateTime.fromISO(todo$.createdAt.get()).toLocaleString(
+                DateTime.DATETIME_MED
+              )}{' '}
+              -{' '}
+              <Text
+                style={{ color: 'blue' }}
+                onPress={() => deleteTodo(todo$.id.get())}
+              >
+                Delete
+              </Text>
+            </Text>
+          )}
+        </For>
+      </View>
+      <View
+        style={{ backgroundColor: 'lightgrey', flexDirection: 'row', gap: 10 }}
+      >
+        <Text>Renders: {renderCount}</Text>
+        <Text>
+          Local DB: {globalStore$.localDBReady.get() ? 'Ready' : 'Not Ready'}
+        </Text>
+        <Text>Signed in: {globalStore$.signedIn.get() ? 'Yes' : 'No'}</Text>
+      </View>
     </View>
   );
 });
