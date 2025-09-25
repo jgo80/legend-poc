@@ -40,60 +40,91 @@ const syncPlugin = configureSynced(syncedCrud, {
   },
   retry: {
     infinite: true,
+    maxDelay: 30,
   },
+  changesSince: 'last-sync',
+  mode: 'assign',
   waitFor: isAuthed$,
 });
 
 // Amplify Plugin
 interface AmplifyCrudProps<T extends keyof Schema> {
   name: T;
-  batchSize?: number;
+  limit?: number;
 }
 
 const amplifyCrud = <T extends keyof Schema>({
   name,
-  batchSize: limit,
+  limit,
 }: AmplifyCrudProps<T>) => {
   return syncPlugin({
     list: async ({ lastSync, refresh }): Promise<Schema[T]['type'][]> => {
-      const filter = lastSync
-        ? {
-            updatedAt: {
-              gt: DateTime.fromMillis(lastSync).toUTC().toISO(),
-            },
-          }
-        : undefined;
-      const currentToken = data$.todos.nextToken.peek();
-
-      // @ts-ignore
-      const { data, nextToken } = await client.models[name].list({
-        filter,
-        limit,
-        nextToken: currentToken,
-      }); // Replace with secondary index
-
-      if (nextToken /* && data && data.length > 0 */) {
-        data$.todos.nextToken.set(nextToken);
-        refresh();
-      } else {
-        data$.todos.nextToken.set(undefined);
+      try {
+        // @ts-ignore
+        const { data, errors, nextToken } = await client.models[name].list({
+          filter: lastSync
+            ? {
+                updatedAt: {
+                  gt: DateTime.fromMillis(lastSync).toUTC().toISO(),
+                },
+              }
+            : undefined,
+          limit,
+          nextToken: data$[name].nextToken.peek(),
+        }); // Todo: Replace with secondary index
+        if (errors) {
+          throw errors;
+        } else if (nextToken) {
+          data$[name].nextToken.set(nextToken);
+          refresh();
+        } else {
+          data$[name].nextToken.set(undefined);
+        }
+        return data;
+      } catch (error) {
+        console.error('Error fetching list', error);
+        throw error;
       }
-
-      return data;
     },
     create: async (input): Promise<Schema[T]['type']> => {
-      // @ts-ignore
-      const { data } = await client.models[name].create(input); // Replace with createMutation
-      return data;
+      try {
+        // @ts-ignore
+        const { data, errors } = await client.models[name].create(input); // Replace with createMutation
+        if (errors) {
+          throw errors;
+        }
+        return data;
+      } catch (error) {
+        console.error('Error creating item', error);
+        throw error;
+      }
     },
     update: async (input): Promise<Schema[T]['type']> => {
-      // @ts-ignore
-      const { data } = await client.models[name].update(input); // Replace with updateMutation
-      return data;
+      try {
+        // @ts-ignore
+        const { data, errors } = await client.models[name].update(input); // Replace with updateMutation
+        if (errors) {
+          throw errors;
+        }
+        return data;
+      } catch (error) {
+        console.error('Error updating item', error);
+        throw error;
+      }
     },
     delete: async (input) => {
-      // @ts-ignore
-      await client.models[name].update({ ...input, deleted: true }); // Replace with deleteMutation
+      try {
+        input.deleted = true; // Remove, replace with deleteMutation
+        // @ts-ignore
+        const { data, errors } = await client.models[name].update(input); // Replace with deleteMutation
+        if (errors) {
+          throw errors;
+        }
+        return data;
+      } catch (error) {
+        console.error('Error deleting item', error);
+        throw error;
+      }
     },
     subscribe: ({ refresh }) => {
       const onAny = () => refresh();
@@ -113,8 +144,6 @@ const amplifyCrud = <T extends keyof Schema>({
       return saved;
     },
     persist: { name },
-    changesSince: 'last-sync',
-    mode: 'assign',
     updatePartial: true,
     fieldCreatedAt: 'createdAt',
     fieldUpdatedAt: 'updatedAt',
@@ -126,32 +155,32 @@ const count = (obj: object) => (obj ? Object.keys(obj).length : 0);
 
 // Data Stores
 const data$ = observable({
-  clients: {
+  Client: {
     nextToken: undefined,
     all: amplifyCrud({ name: 'Client' }),
     count: () =>
-      data$.clients.state.isLoaded.get() ? count(data$.clients.all.get()) : 0,
-    state: () => syncState(data$.clients.all),
+      data$.Client.state.isLoaded.get() ? count(data$.Client.all.get()) : 0,
+    state: () => syncState(data$.Client.all),
   },
-  todos: {
+  Todo: {
     nextToken: undefined,
     all: amplifyCrud({
       name: 'Todo',
-    //   batchSize: 5,
+      //   batchSize: 5,
     }),
     count: () =>
-      data$.todos.state.isLoaded.get() ? count(data$.todos.all.get()) : 0,
-    state: () => syncState(data$.todos.all),
+      data$.Todo.state.isLoaded.get() ? count(data$.Todo.all.get()) : 0,
+    state: () => syncState(data$.Todo.all),
   },
 });
 
 const resetStores = () => {
-  data$.todos.state.clearPersist().then(() => {
+  data$.Todo.state.resetPersistence().then(() => {
     console.log('Cleared persisted data');
   });
-  data$.todos.state.lastSync.set(0);
-  console.log('Reset lastSync');
-  data$.todos.nextToken.set(undefined);
+  //   data$.todos.state.lastSync.set(0);
+  //   console.log('Reset lastSync');
+  data$.Todo.nextToken.set(undefined);
   console.log('Reset nextToken');
 };
 
@@ -177,33 +206,33 @@ const Page = observer(() => {
         <Button
           title={'Sync (incremental)'}
           onPress={() => {
-            data$.todos.state.sync();
+            data$.Todo.state.sync();
           }}
         />
         <Button
           title={'Sync (full)'}
           onPress={() => {
-            data$.todos.state.lastSync.set(0);
-            data$.todos.state.sync();
+            // data$.todos.state.lastSync.set(0);
+            data$.Todo.state.sync({ resetLastSync: true });
           }}
         />
         <Button
           title={'Add Todo'}
           onPress={() => {
             const id = uuid();
-            data$.todos.all[id].set({ id, title: 'Todo', completed: false });
+            data$.Todo.all[id].set({ id, title: 'Todo', completed: false });
           }}
         />
         <Button
           title={'Undo Last Delete'}
           onPress={() => {
-            data$.todos.all[lastDeleted$.get()!].deleted.set(false);
+            data$.Todo.all[lastDeleted$.get()!].deleted.set(false);
             lastDeleted$.set(null);
           }}
           disabled={!lastDeleted$.get()}
         />
         <For
-          each={data$.todos.all}
+          each={data$.Todo.all}
           sortValues={(a, b) =>
             +new Date(a.createdAt!) - +new Date(b.createdAt!)
           }
@@ -251,11 +280,11 @@ const Page = observer(() => {
         <Text>
           Last sync:{' '}
           {DateTime.fromMillis(
-            data$.todos.state.lastSync.get() || 0
+            data$.Todo.state.lastSync.get() || 0
           ).toLocaleString(DateTime.DATETIME_FULL_WITH_SECONDS)}
         </Text>
-        <Text>Clients: {data$.clients.count.get()}</Text>
-        <Text>Todos: {data$.todos.count.get()}</Text>
+        <Text>Clients: {data$.Client.count.get()}</Text>
+        <Text>Todos: {data$.Todo.count.get()}</Text>
       </View>
     </View>
   );
