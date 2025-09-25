@@ -1,4 +1,5 @@
 import { type Schema } from '@/amplify/data/resource';
+import { ObservablePersistMMKV } from '@/plugins/mmkv';
 import { observable, syncState } from '@legendapp/state';
 import { observablePersistIndexedDB } from '@legendapp/state/persist-plugins/indexeddb';
 import { For, observer } from '@legendapp/state/react';
@@ -9,7 +10,7 @@ import { fetchAuthSession, signIn } from 'aws-amplify/auth';
 import { generateClient } from 'aws-amplify/data';
 import { DateTime } from 'luxon';
 import { useEffect } from 'react';
-import { Button, Text, View } from 'react-native';
+import { Button, Platform, Text, View } from 'react-native';
 import { uuid } from 'short-uuid';
 import outputs from '../amplify_outputs.json';
 
@@ -25,10 +26,15 @@ const lastDeleted$ = observable<string | null>(null);
 // Sync & Persist
 const syncPlugin = configureSynced(syncedCrud, {
   persist: {
-    plugin: observablePersistIndexedDB({
-      databaseName: 'poc',
-      version: 1,
-      tableNames,
+    plugin: Platform.select<any>({
+      native: new ObservablePersistMMKV({
+        id: 'poc',
+      }),
+      web: observablePersistIndexedDB({
+        databaseName: 'poc',
+        version: 2,
+        tableNames,
+      }),
     }),
     retrySync: true,
   },
@@ -41,23 +47,38 @@ const syncPlugin = configureSynced(syncedCrud, {
 // Amplify Plugin
 interface AmplifyCrudProps<T extends keyof Schema> {
   name: T;
+  batchSize?: number;
 }
 
-const amplifyCrud = <T extends keyof Schema>({ name }: AmplifyCrudProps<T>) => {
+const amplifyCrud = <T extends keyof Schema>({
+  name,
+  batchSize: limit,
+}: AmplifyCrudProps<T>) => {
   return syncPlugin({
-    list: async (params): Promise<Schema[T]['type'][]> => {
-      const filter = params.lastSync
+    list: async ({ lastSync, refresh }): Promise<Schema[T]['type'][]> => {
+      const filter = lastSync
         ? {
             updatedAt: {
-              gt: DateTime.fromMillis(params.lastSync).toUTC().toISO(),
+              gt: DateTime.fromMillis(lastSync).toUTC().toISO(),
             },
           }
         : undefined;
+      const currentToken = data$.todos.nextToken.peek();
 
       // @ts-ignore
-      const { data } = await client.models[name].list({
+      const { data, nextToken } = await client.models[name].list({
         filter,
+        limit,
+        nextToken: currentToken,
       }); // Replace with secondary index
+
+      if (nextToken /* && data && data.length > 0 */) {
+        data$.todos.nextToken.set(nextToken);
+        refresh();
+      } else {
+        data$.todos.nextToken.set(undefined);
+      }
+
       return data;
     },
     create: async (input): Promise<Schema[T]['type']> => {
@@ -106,18 +127,33 @@ const count = (obj: object) => (obj ? Object.keys(obj).length : 0);
 // Data Stores
 const data$ = observable({
   clients: {
+    nextToken: undefined,
     all: amplifyCrud({ name: 'Client' }),
     count: () =>
       data$.clients.state.isLoaded.get() ? count(data$.clients.all.get()) : 0,
     state: () => syncState(data$.clients.all),
   },
   todos: {
-    all: amplifyCrud({ name: 'Todo' }),
+    nextToken: undefined,
+    all: amplifyCrud({
+      name: 'Todo',
+    //   batchSize: 5,
+    }),
     count: () =>
       data$.todos.state.isLoaded.get() ? count(data$.todos.all.get()) : 0,
     state: () => syncState(data$.todos.all),
   },
 });
+
+const resetStores = () => {
+  data$.todos.state.clearPersist().then(() => {
+    console.log('Cleared persisted data');
+  });
+  data$.todos.state.lastSync.set(0);
+  console.log('Reset lastSync');
+  data$.todos.nextToken.set(undefined);
+  console.log('Reset nextToken');
+};
 
 const Page = observer(() => {
   useEffect(() => {
@@ -137,6 +173,7 @@ const Page = observer(() => {
             signIn({ username: 'mail@joey.aero', password: '$Password123' });
           }}
         />
+        <Button title={'Clear'} onPress={resetStores} />
         <Button
           title={'Sync (incremental)'}
           onPress={() => {
@@ -146,7 +183,8 @@ const Page = observer(() => {
         <Button
           title={'Sync (full)'}
           onPress={() => {
-            data$.todos.state.sync({ resetLastSync: true });
+            data$.todos.state.lastSync.set(0);
+            data$.todos.state.sync();
           }}
         />
         <Button
