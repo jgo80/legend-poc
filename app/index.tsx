@@ -1,8 +1,10 @@
 import { type Schema } from '@/amplify/data/resource';
 import { ObservablePersistMMKV } from '@/plugins/mmkv';
+import { LegendList } from '@legendapp/list';
 import { observable, syncState } from '@legendapp/state';
+import { undoRedo } from '@legendapp/state/helpers/undoRedo';
 import { observablePersistIndexedDB } from '@legendapp/state/persist-plugins/indexeddb';
-import { For, observer } from '@legendapp/state/react';
+import { observer } from '@legendapp/state/react';
 import { configureSynced } from '@legendapp/state/sync';
 import { syncedCrud } from '@legendapp/state/sync-plugins/crud';
 import { Amplify } from 'aws-amplify';
@@ -42,8 +44,8 @@ const syncPlugin = configureSynced(syncedCrud, {
     infinite: true,
     maxDelay: 30,
   },
-  changesSince: 'last-sync',
   mode: 'assign',
+  changesSince: 'last-sync',
   waitFor: isAuthed$,
 });
 
@@ -151,10 +153,10 @@ const amplifyCrud = <T extends keyof Schema>({
   });
 };
 
-const count = (obj: object) => (obj ? Object.keys(obj).length : 0);
+export const count = (obj: object) => (obj ? Object.keys(obj).length : 0);
 
 // Data Stores
-const data$ = observable({
+export const data$ = observable({
   Client: {
     nextToken: undefined,
     all: amplifyCrud({ name: 'Client' }),
@@ -166,13 +168,19 @@ const data$ = observable({
     nextToken: undefined,
     all: amplifyCrud({
       name: 'Todo',
-      //   batchSize: 5,
+      limit: 1000,
     }),
+    list: () =>
+      Object.values(data$.Todo.all).sort(
+        (a, b) => +new Date(a.createdAt.get()!) - +new Date(b.createdAt.get()!)
+      ),
     count: () =>
       data$.Todo.state.isLoaded.get() ? count(data$.Todo.all.get()) : 0,
     state: () => syncState(data$.Todo.all),
   },
 });
+
+const { undo, redo, getHistory } = undoRedo(data$.Todo.all, { limit: 100 });
 
 const resetStores = () => {
   data$.Todo.state.resetPersistence().then(() => {
@@ -194,8 +202,10 @@ const Page = observer(() => {
   }, []);
 
   return (
-    <View style={{ flex: 1, justifyContent: 'space-between' }}>
-      <View>
+    <View
+      style={Platform.select({ web: { height: '100vh' }, native: { flex: 1 } })}
+    >
+      <View style={{ flex: 1 }}>
         <Button
           title={'Sign In'}
           onPress={() => {
@@ -212,7 +222,6 @@ const Page = observer(() => {
         <Button
           title={'Sync (full)'}
           onPress={() => {
-            // data$.todos.state.lastSync.set(0);
             data$.Todo.state.sync({ resetLastSync: true });
           }}
         />
@@ -224,54 +233,67 @@ const Page = observer(() => {
           }}
         />
         <Button
-          title={'Undo Last Delete'}
+          title={'Add 100 Todos'}
           onPress={() => {
-            data$.Todo.all[lastDeleted$.get()!].deleted.set(false);
-            lastDeleted$.set(null);
+            for (let i = 0; i < 100; i++) {
+              const id = uuid();
+              data$.Todo.all[id].set({
+                id,
+                title: `Todo ${Math.floor(Math.random() * 1000)}`,
+                completed: false,
+              });
+            }
           }}
-          disabled={!lastDeleted$.get()}
         />
-        <For
-          each={data$.Todo.all}
-          sortValues={(a, b) =>
-            +new Date(a.createdAt!) - +new Date(b.createdAt!)
-          }
-        >
-          {(todo$) => (
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                padding: 10,
-                gap: 10,
-                borderBottomColor: 'lightgray',
-                borderBottomWidth: 1,
-              }}
-            >
-              <Text>{todo$.title.get()}</Text>
-              <Text>
-                {DateTime.fromISO(todo$.createdAt.get()!).toLocaleString(
-                  DateTime.DATETIME_FULL
-                )}
-              </Text>
-              <Text
-                onPress={() => {
-                  todo$.completed.set((prev) => !prev);
+        <Button
+          title={'Undo'}
+          onPress={() => {
+            undo();
+          }}
+        />
+        <LegendList
+          data={data$.Todo.list}
+          extraData={data$.Todo.list.get()} // when array changes
+          style={{ flex: 1, width: '100%', backgroundColor: 'yellow' }}
+          recycleItems
+          estimatedItemSize={43}
+          overScrollMode={'always'}
+          stickyIndices={[9]}
+          renderItem={({ item: todo$ }) => {
+            return (
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  padding: 10,
+                  gap: 10,
                 }}
               >
-                {todo$.completed.get() ? '✅' : '⬜️'}
-              </Text>
-              <Text
-                onPress={() => {
-                  lastDeleted$.set(todo$.id.get()!);
-                  todo$.deleted.set(true);
-                }}
-              >
-                🗑️
-              </Text>
-            </View>
-          )}
-        </For>
+                <Text>{todo$.title.get()}</Text>
+                <Text>
+                  {DateTime.fromISO(todo$.createdAt.get()!).toLocaleString(
+                    DateTime.DATETIME_FULL
+                  )}
+                </Text>
+                <Text
+                  onPress={() => {
+                    todo$.completed.set((prev) => !prev);
+                  }}
+                >
+                  {todo$.completed.get() ? '✅' : '⬜️'}
+                </Text>
+                <Text
+                  onPress={() => {
+                    todo$.delete();
+                  }}
+                >
+                  🗑️
+                </Text>
+              </View>
+            );
+          }}
+          keyExtractor={(item) => item.id.get()!}
+        />
       </View>
       <View
         style={{ backgroundColor: 'lightgray', flexDirection: 'row', gap: 10 }}
