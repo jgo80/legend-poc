@@ -6,7 +6,6 @@ import type {
   PersistOptions,
 } from '@legendapp/state/sync';
 import { Configuration, MMKV } from 'react-native-mmkv';
-import SuperJSON from 'superjson';
 
 const symbolDefault = Symbol();
 const MetadataSuffix = '__m';
@@ -36,7 +35,7 @@ export class ObservablePersistMMKV implements ObservablePersistPlugin {
     if (this.data[table] === undefined) {
       try {
         const value = storage.getString(table);
-        this.data[table] = value ? SuperJSON.parse(value) : init;
+        this.data[table] = value ? JSON.parse(value) : init;
       } catch {
         console.error('[legend-state] MMKV failed to parse', table);
       }
@@ -101,7 +100,7 @@ export class ObservablePersistMMKV implements ObservablePersistPlugin {
     const v = this.data[table];
     if (v !== undefined) {
       try {
-        storage.set(table, SuperJSON.stringify(v));
+        storage.set(table, JSON.stringify(v));
       } catch (err) {
         console.error(err);
       }
