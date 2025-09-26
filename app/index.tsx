@@ -11,6 +11,7 @@ import { observablePersistIndexedDB } from '@legendapp/state/persist-plugins/ind
 import { observer } from '@legendapp/state/react';
 import { configureSynced } from '@legendapp/state/sync';
 import { syncedCrud } from '@legendapp/state/sync-plugins/crud';
+import { FlashList } from '@shopify/flash-list';
 import { Amplify } from 'aws-amplify';
 import { fetchAuthSession, signIn } from 'aws-amplify/auth';
 import { generateClient } from 'aws-amplify/data';
@@ -29,7 +30,6 @@ const tableNames = Object.keys(client.models) as (keyof Schema)[];
 
 // Global Stores
 const isAuthed$ = observable(false);
-const lastDeleted$ = observable<string | null>(null);
 
 // Sync & Persist
 const syncPlugin = configureSynced(syncedCrud, {
@@ -61,25 +61,32 @@ interface AmplifyCrudProps<T extends keyof Schema> {
   limit?: number;
 }
 
+// Type helpers for better type inference
+type SchemaModelType<T extends keyof Schema> = Schema[T]['type'];
+type SchemaModelInput<T extends keyof Schema> = Partial<SchemaModelType<T>> & {
+  id?: string;
+};
+
 const amplifyCrud = <T extends keyof Schema>({
   name,
   limit,
 }: AmplifyCrudProps<T>) => {
+  // Type assertion for the model to avoid ts-ignore
+
   return syncPlugin({
-    list: async ({ lastSync, refresh }): Promise<Schema[T]['type'][]> => {
+    list: async ({ lastSync, refresh }): Promise<SchemaModelType<T>[]> => {
       try {
         if (data$[name].currentSync.peek() === undefined) {
           data$[name].currentSync.set(lastSync || 0);
         }
 
-        // @ts-ignore
-        const { data, errors, nextToken } = await client.models[name][
-          `list${name}ByAccountIdAndUpdatedAt`
-        ](
+        const model = client.models[name] as any;
+        const listMethodName = `list${name}ByAccountIdAndUpdatedAt` as const;
+        const { data, errors, nextToken } = await model[listMethodName](
           {
             accountId,
             updatedAt: {
-              ge: DateTime.fromMillis(data$[name].currentSync.peek() || 0)
+              gt: DateTime.fromMillis(data$[name].currentSync.peek() || 0)
                 .toUTC()
                 .toISO()!,
             },
@@ -101,69 +108,63 @@ const amplifyCrud = <T extends keyof Schema>({
           data$[name].nextToken.set(undefined);
         }
 
-        return data;
+        return data as SchemaModelType<T>[];
       } catch (error) {
         console.error('Error fetching list', error);
         throw error;
       }
     },
-    create: async (input): Promise<Schema[T]['type']> => {
+    create: async (input: SchemaModelInput<T>): Promise<SchemaModelType<T>> => {
       try {
-        data$[name].touched.set(+DateTime.now());
-        input.accountId = accountId; // Replace with createMutation
+        (input as any).accountId = accountId; // Replace with createMutation
 
-        // @ts-ignore
-        const { data, errors } = await client.models[name].create(input);
+        const model = client.models[name] as any;
+        const { data, errors } = await model.create(input);
         if (errors) {
           throw errors;
         }
-        return data;
+        return data as SchemaModelType<T>;
       } catch (error) {
         console.error('Error creating item', error);
         throw error;
       }
     },
-    update: async (input): Promise<Schema[T]['type']> => {
+    update: async (input: SchemaModelInput<T>): Promise<SchemaModelType<T>> => {
       try {
-        data$[name].touched.set(+DateTime.now());
-        input.accountId = accountId; // Replace with updateMutation
+        (input as any).accountId = accountId; // Replace with updateMutation
 
-        // @ts-ignore
-        const { data, errors } = await client.models[name].update(input);
+        const model = client.models[name] as any;
+        const { data, errors } = await model.update(input);
         if (errors) {
           throw errors;
         }
-        return data;
+        return data as SchemaModelType<T>;
       } catch (error) {
         console.error('Error updating item', error);
         throw error;
       }
     },
-    delete: async (input) => {
+    delete: async (input: SchemaModelInput<T>) => {
       try {
-        data$[name].touched.set(+DateTime.now());
-        input.accountId = accountId; // Replace with deleteMutation
-        input.deleted = true; // Soft delete
+        (input as any).accountId = accountId; // Replace with deleteMutation
+        (input as any).deleted = true; // Soft delete
 
-        // @ts-ignore
-        const { data, errors } = await client.models[name].update(input);
+        const model = client.models[name] as any;
+        const { data, errors } = await model.update(input);
         if (errors) {
           throw errors;
         }
-        return data;
+        return data as SchemaModelType<T>;
       } catch (error) {
         console.error('Error deleting item', error);
         throw error;
       }
     },
     subscribe: ({ refresh }) => {
-      const onAny = () => refresh();
-      // @ts-ignore
-      const c = client.models[name].onCreate().subscribe({ next: onAny });
-      // @ts-ignore
-      const u = client.models[name].onUpdate().subscribe({ next: onAny });
-      // @ts-ignore
-      const d = client.models[name].onDelete().subscribe({ next: onAny });
+      const model = client.models[name] as any;
+      const c = model.onCreate().subscribe({ next: refresh });
+      const u = model.onUpdate().subscribe({ next: refresh });
+      const d = model.onDelete().subscribe({ next: refresh });
       return () => {
         c.unsubscribe();
         u.unsubscribe();
@@ -181,24 +182,33 @@ const amplifyCrud = <T extends keyof Schema>({
   });
 };
 
-interface ModelState<T extends keyof Schema> {
-  touched?: number;
-  currentSync?: number;
-  nextToken?: string | null;
-  all: Record<string, Schema[T]['type']>;
-  count: number;
-  state: Observable<ObservableSyncState>;
-}
+const listFromObject = <T,>(obj: Record<string, T>): T[] =>
+  Object.values(obj || {});
 
 const countKeys = (all: Record<string, any>): number =>
   Object.keys(all || {}).length;
 
-const data$ = observable<Record<keyof Schema, ModelState<keyof Schema>>>({
+interface ModelState<T extends keyof Schema> {
+  currentSync?: number;
+  nextToken?: string | null;
+  all: Record<string, SchemaModelType<T>>;
+  list: Schema[T]['type'][];
+  count: number;
+  changed?: number;
+  state: Observable<ObservableSyncState>;
+}
+
+type DataStore = {
+  [K in keyof Schema]: ModelState<K>;
+};
+
+const data$ = observable<DataStore>({
   Client: {
     all: amplifyCrud({
       name: 'Client',
       limit: 100,
-    }),
+    }) as Record<string, SchemaModelType<'Client'>>,
+    list: () => listFromObject(data$.Client.all),
     count: (): number => countKeys(data$.Client.all),
     state: () => syncState(data$.Client.all),
   },
@@ -206,22 +216,71 @@ const data$ = observable<Record<keyof Schema, ModelState<keyof Schema>>>({
     all: amplifyCrud({
       name: 'Todo',
       limit: 1000,
-    }),
+    }) as Record<string, SchemaModelType<'Todo'>>,
+    list: () =>
+      listFromObject(data$.Todo.all).sort(
+        (a, b) => +new Date(a.createdAt.get()!) - +new Date(b.createdAt.get()!)
+      ),
     count: (): number => countKeys(data$.Todo.all),
     state: () => syncState(data$.Todo.all),
   },
 });
 
+// Setup change tracker for re-rendering lists
+for (const modelName of Object.keys(data$) as (keyof Schema)[]) {
+  data$[modelName].all.onChange(() => {
+    data$[modelName].changed.set(+DateTime.now());
+  });
+}
+
 // Render Page
 const Page = observer(() => {
   return (
-    <View style={{ flex: 1, gap: 10 }}>
+    <View
+      style={{
+        ...Platform.select({
+          web: { height: '100vh' } as any,
+          native: { flex: 1 },
+        }),
+        gap: 10,
+      }}
+    >
       <Worker />
       <Menu />
-      <Text>
-        {data$.Todo.count.get({ shallow: true }) ||
-          (!data$.Todo.state.isPersistLoaded.get() ? 'Loading...' : 0)}
-      </Text>
+      <FlashList
+        data={data$.Todo.list}
+        extraData={data$.Todo.changed.get()}
+        keyExtractor={(item) => item.id.get()}
+        renderItem={({ item }) => {
+          const { title, createdAt, completed } = item;
+          return (
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                height: 40,
+                gap: 10,
+                padding: 10,
+              }}
+            >
+              <Text>{title.get()}</Text>
+              <Text>
+                {DateTime.fromISO(createdAt.get()!).toLocaleString(
+                  DateTime.DATETIME_SHORT_WITH_SECONDS
+                )}
+              </Text>
+              <Text
+                onPress={() => {
+                  completed.set((prev) => !prev);
+                }}
+              >
+                {completed.get() ? '✅' : '⬜️'}
+              </Text>
+            </View>
+          );
+        }}
+      />
+      <Footer />
     </View>
   );
 });
@@ -293,5 +352,31 @@ const Menu = observer(() => {
         }}
       />
     </ScrollView>
+  );
+});
+
+const Footer = observer(() => {
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        gap: 10,
+        padding: 10,
+        backgroundColor: 'lightgray',
+      }}
+    >
+      <Text>Authed: {isAuthed$.get() ? 'Yes' : 'No'}</Text>
+      <Text>
+        Synced:{' '}
+        {DateTime.fromMillis(
+          data$.Todo.state.lastSync.get() || 0
+        ).toLocaleString(DateTime.DATETIME_SHORT_WITH_SECONDS)}
+      </Text>
+      <Text>
+        Todos:{' '}
+        {data$.Todo.count.get({ shallow: true }) ||
+          (!data$.Todo.state.isPersistLoaded.get() ? 'Loading...' : 0)}
+      </Text>
+    </View>
   );
 });

@@ -8,7 +8,9 @@
     "android": "expo run:android",
     "ios": "expo run:ios --device",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "expo:release:web": "npx expo export --platform web",
+    "expo:serve:web": "npx serve dist -s"
   },
   "dependencies": {
     "@aws-amplify/backend": "^1.16.1",
