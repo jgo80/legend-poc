@@ -1,8 +1,12 @@
 import { type Schema } from '@/amplify/data/resource';
 import { ObservablePersistMMKV } from '@/plugins/mmkv';
-import { LegendList } from '@legendapp/list';
-import { observable, syncState } from '@legendapp/state';
-import { undoRedo } from '@legendapp/state/helpers/undoRedo';
+import {
+  batch,
+  Observable,
+  observable,
+  ObservableSyncState,
+  syncState,
+} from '@legendapp/state';
 import { observablePersistIndexedDB } from '@legendapp/state/persist-plugins/indexeddb';
 import { observer } from '@legendapp/state/react';
 import { configureSynced } from '@legendapp/state/sync';
@@ -12,9 +16,11 @@ import { fetchAuthSession, signIn } from 'aws-amplify/auth';
 import { generateClient } from 'aws-amplify/data';
 import { DateTime } from 'luxon';
 import { useEffect } from 'react';
-import { Button, Platform, Text, View } from 'react-native';
+import { Button, Platform, ScrollView, Text, View } from 'react-native';
 import { uuid } from 'short-uuid';
 import outputs from '../amplify_outputs.json';
+
+const accountId = 'poc';
 
 // Amplify
 Amplify.configure(outputs);
@@ -62,26 +68,39 @@ const amplifyCrud = <T extends keyof Schema>({
   return syncPlugin({
     list: async ({ lastSync, refresh }): Promise<Schema[T]['type'][]> => {
       try {
+        if (data$[name].currentSync.peek() === undefined) {
+          data$[name].currentSync.set(lastSync || 0);
+        }
+
         // @ts-ignore
-        const { data, errors, nextToken } = await client.models[name].list({
-          filter: lastSync
-            ? {
-                updatedAt: {
-                  gt: DateTime.fromMillis(lastSync).toUTC().toISO(),
-                },
-              }
-            : undefined,
-          limit,
-          nextToken: data$[name].nextToken.peek(),
-        }); // Todo: Replace with secondary index
+        const { data, errors, nextToken } = await client.models[name][
+          `list${name}ByAccountIdAndUpdatedAt`
+        ](
+          {
+            accountId,
+            updatedAt: {
+              ge: DateTime.fromMillis(data$[name].currentSync.peek() || 0)
+                .toUTC()
+                .toISO()!,
+            },
+          },
+          {
+            limit,
+            nextToken: data$[name].nextToken.peek(),
+            sortDirection: 'DESC',
+          }
+        );
+
         if (errors) {
           throw errors;
         } else if (nextToken) {
           data$[name].nextToken.set(nextToken);
           refresh();
         } else {
+          data$[name].currentSync.set(undefined);
           data$[name].nextToken.set(undefined);
         }
+
         return data;
       } catch (error) {
         console.error('Error fetching list', error);
@@ -90,8 +109,11 @@ const amplifyCrud = <T extends keyof Schema>({
     },
     create: async (input): Promise<Schema[T]['type']> => {
       try {
+        data$[name].touched.set(+DateTime.now());
+        input.accountId = accountId; // Replace with createMutation
+
         // @ts-ignore
-        const { data, errors } = await client.models[name].create(input); // Replace with createMutation
+        const { data, errors } = await client.models[name].create(input);
         if (errors) {
           throw errors;
         }
@@ -103,8 +125,11 @@ const amplifyCrud = <T extends keyof Schema>({
     },
     update: async (input): Promise<Schema[T]['type']> => {
       try {
+        data$[name].touched.set(+DateTime.now());
+        input.accountId = accountId; // Replace with updateMutation
+
         // @ts-ignore
-        const { data, errors } = await client.models[name].update(input); // Replace with updateMutation
+        const { data, errors } = await client.models[name].update(input);
         if (errors) {
           throw errors;
         }
@@ -116,9 +141,12 @@ const amplifyCrud = <T extends keyof Schema>({
     },
     delete: async (input) => {
       try {
-        input.deleted = true; // Remove, replace with deleteMutation
+        data$[name].touched.set(+DateTime.now());
+        input.accountId = accountId; // Replace with deleteMutation
+        input.deleted = true; // Soft delete
+
         // @ts-ignore
-        const { data, errors } = await client.models[name].update(input); // Replace with deleteMutation
+        const { data, errors } = await client.models[name].update(input);
         if (errors) {
           throw errors;
         }
@@ -153,46 +181,54 @@ const amplifyCrud = <T extends keyof Schema>({
   });
 };
 
-export const count = (obj: object) => (obj ? Object.keys(obj).length : 0);
+interface ModelState<T extends keyof Schema> {
+  touched?: number;
+  currentSync?: number;
+  nextToken?: string | null;
+  all: Record<string, Schema[T]['type']>;
+  count: number;
+  state: Observable<ObservableSyncState>;
+}
 
-// Data Stores
-export const data$ = observable({
+const countKeys = (all: Record<string, any>): number =>
+  Object.keys(all || {}).length;
+
+const data$ = observable<Record<keyof Schema, ModelState<keyof Schema>>>({
   Client: {
-    nextToken: undefined,
-    all: amplifyCrud({ name: 'Client' }),
-    count: () =>
-      data$.Client.state.isLoaded.get() ? count(data$.Client.all.get()) : 0,
+    all: amplifyCrud({
+      name: 'Client',
+      limit: 100,
+    }),
+    count: (): number => countKeys(data$.Client.all),
     state: () => syncState(data$.Client.all),
   },
   Todo: {
-    nextToken: undefined,
     all: amplifyCrud({
       name: 'Todo',
       limit: 1000,
     }),
-    list: () =>
-      Object.values(data$.Todo.all).sort(
-        (a, b) => +new Date(a.createdAt.get()!) - +new Date(b.createdAt.get()!)
-      ),
-    count: () =>
-      data$.Todo.state.isLoaded.get() ? count(data$.Todo.all.get()) : 0,
+    count: (): number => countKeys(data$.Todo.all),
     state: () => syncState(data$.Todo.all),
   },
 });
 
-const { undo, redo, getHistory } = undoRedo(data$.Todo.all, { limit: 100 });
-
-const resetStores = () => {
-  data$.Todo.state.resetPersistence().then(() => {
-    console.log('Cleared persisted data');
-  });
-  //   data$.todos.state.lastSync.set(0);
-  //   console.log('Reset lastSync');
-  data$.Todo.nextToken.set(undefined);
-  console.log('Reset nextToken');
-};
-
+// Render Page
 const Page = observer(() => {
+  return (
+    <View style={{ flex: 1, gap: 10 }}>
+      <Worker />
+      <Menu />
+      <Text>
+        {data$.Todo.count.get({ shallow: true }) ||
+          (!data$.Todo.state.isPersistLoaded.get() ? 'Loading...' : 0)}
+      </Text>
+    </View>
+  );
+});
+
+export default Page;
+
+const Worker = () => {
   useEffect(() => {
     fetchAuthSession().then((session) => {
       if (session.userSub) {
@@ -200,41 +236,51 @@ const Page = observer(() => {
       }
     });
   }, []);
+  return <></>;
+};
 
+const Menu = observer(() => {
   return (
-    <View
-      style={Platform.select({ web: { height: '100vh' }, native: { flex: 1 } })}
+    <ScrollView
+      horizontal
+      style={{ flexGrow: 0 }}
+      contentContainerStyle={{ flexDirection: 'row', gap: 10 }}
     >
-      <View style={{ flex: 1 }}>
-        <Button
-          title={'Sign In'}
-          onPress={() => {
-            signIn({ username: 'mail@joey.aero', password: '$Password123' });
-          }}
-        />
-        <Button title={'Clear'} onPress={resetStores} />
-        <Button
-          title={'Sync (incremental)'}
-          onPress={() => {
-            data$.Todo.state.sync();
-          }}
-        />
-        <Button
-          title={'Sync (full)'}
-          onPress={() => {
-            data$.Todo.state.sync({ resetLastSync: true });
-          }}
-        />
-        <Button
-          title={'Add Todo'}
-          onPress={() => {
-            const id = uuid();
-            data$.Todo.all[id].set({ id, title: 'Todo', completed: false });
-          }}
-        />
-        <Button
-          title={'Add 100 Todos'}
-          onPress={() => {
+      <Button
+        title={'Sign In'}
+        onPress={() => {
+          signIn({
+            username: 'mail@joey.aero',
+            password: '$Password123',
+          });
+        }}
+      />
+      <Button
+        title={'Clear'}
+        onPress={() => {
+          data$.Todo.state.resetPersistence().then(async () => {
+            console.log('Cleared');
+          });
+        }}
+      />
+      <Button
+        title={'Sync'}
+        onPress={() => {
+          data$.Todo.state.sync().then(() => {
+            console.log('Synced');
+          });
+        }}
+      />
+      <Button
+        title={'Re-Sync'}
+        onPress={() => {
+          data$.Todo.state.sync({ resetLastSync: true });
+        }}
+      />
+      <Button
+        title={'Add 100 Todos'}
+        onPress={() => {
+          batch(() => {
             for (let i = 0; i < 100; i++) {
               const id = uuid();
               data$.Todo.all[id].set({
@@ -243,73 +289,9 @@ const Page = observer(() => {
                 completed: false,
               });
             }
-          }}
-        />
-        <Button
-          title={'Undo'}
-          onPress={() => {
-            undo();
-          }}
-        />
-        <LegendList
-          data={data$.Todo.list}
-          extraData={data$.Todo.list.get()} // when array changes
-          style={{ flex: 1, width: '100%', backgroundColor: 'yellow' }}
-          recycleItems
-          estimatedItemSize={43}
-          overScrollMode={'always'}
-          stickyIndices={[9]}
-          renderItem={({ item: todo$ }) => {
-            return (
-              <View
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  padding: 10,
-                  gap: 10,
-                }}
-              >
-                <Text>{todo$.title.get()}</Text>
-                <Text>
-                  {DateTime.fromISO(todo$.createdAt.get()!).toLocaleString(
-                    DateTime.DATETIME_FULL
-                  )}
-                </Text>
-                <Text
-                  onPress={() => {
-                    todo$.completed.set((prev) => !prev);
-                  }}
-                >
-                  {todo$.completed.get() ? '✅' : '⬜️'}
-                </Text>
-                <Text
-                  onPress={() => {
-                    todo$.delete();
-                  }}
-                >
-                  🗑️
-                </Text>
-              </View>
-            );
-          }}
-          keyExtractor={(item) => item.id.get()!}
-        />
-      </View>
-      <View
-        style={{ backgroundColor: 'lightgray', flexDirection: 'row', gap: 10 }}
-      >
-        <Text>isAuthed: {isAuthed$.get().toString()}</Text>
-        <Text>
-          Last sync:{' '}
-          {DateTime.fromMillis(
-            data$.Todo.state.lastSync.get() || 0
-          ).toLocaleString(DateTime.DATETIME_FULL_WITH_SECONDS)}
-        </Text>
-        <Text>Clients: {data$.Client.count.get()}</Text>
-        <Text>Todos: {data$.Todo.count.get()}</Text>
-      </View>
-    </View>
+          });
+        }}
+      />
+    </ScrollView>
   );
 });
-
-export default Page;

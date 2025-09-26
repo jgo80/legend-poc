@@ -1,6 +1,6 @@
 import { observer, use$ } from '@legendapp/state/react';
 import { ScrollView, Text, View } from 'react-native';
-import { data$ } from './index';
+import { data$ } from './index3';
 
 const Page = observer(() => {
   const count = use$(data$.Todo.count.get());
