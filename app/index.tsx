@@ -1,15 +1,31 @@
 import { data$, isAuthed$, SchemaModelType } from '@/methods/Amplify';
-import { batch, Observable } from '@legendapp/state';
-import { observer } from '@legendapp/state/react';
+import { batch, observable, Observable } from '@legendapp/state';
+import { observer, use$, useObservable } from '@legendapp/state/react';
 import { FlashList, ListRenderItem } from '@shopify/flash-list';
 import { fetchAuthSession, signIn, signOut } from 'aws-amplify/auth';
 import { DateTime } from 'luxon';
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { Button, ScrollView, Text, View } from 'react-native';
 import { uuid } from 'short-uuid';
 
+// state remains in memory for the lifetime of the app
+const filteredTodos$ = observable(() =>
+  data$.Todo.list.filter((todo) => todo.title.get().includes('123'))
+);
+
 // Render Page
 const Page = observer(() => {
+  // state is specific to the lifetime of the component
+  const filteredTodos$ = useObservable(() =>
+    data$.Todo.list.filter((todo) => todo.title.get().includes('123'))
+  );
+
+  // propably use this as replacement for useState w/o depenency array
+  const toggle = useObservable(false);
+
+  // Track change explicitly
+  const isToggles = use$(toggle);
+
   return (
     <View
       style={{
@@ -18,9 +34,17 @@ const Page = observer(() => {
       }}
     >
       <Worker />
-      <Menu />
+      <Text
+        style={{ padding: 10, fontWeight: 'bold', color: 'blue' }}
+        onPress={() => {
+          toggle.set((prev) => !prev);
+        }}
+      >
+        Menu
+      </Text>
+      {isToggles && <Menu />}
       <FlashList
-        data={data$.Todo.list}
+        data={filteredTodos$}
         extraData={data$.Todo.changed.get()}
         renderItem={renderItem}
       />
@@ -138,8 +162,6 @@ const Menu = observer(() => {
 });
 
 const Footer = observer(() => {
-  const renderCount = useRef(1).current++;
-
   return (
     <View
       style={{
@@ -149,7 +171,6 @@ const Footer = observer(() => {
         backgroundColor: 'lightgray',
       }}
     >
-      <Text>Render: {renderCount}</Text>
       <Text>Authed: {isAuthed$.get() ? 'Yes' : 'No'}</Text>
       <Text>
         Synced:{' '}
