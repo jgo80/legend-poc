@@ -1,5 +1,6 @@
 import { type Schema } from '@/amplify/data/resource';
 import { observablePersistIndexedDB } from '@/plugins/indexeddb';
+import { observablePersistMMKV } from '@/plugins/mmkv';
 import {
   Observable,
   observable,
@@ -10,6 +11,7 @@ import { syncedCrud } from '@legendapp/state/sync-plugins/crud';
 import { Amplify } from 'aws-amplify';
 import { generateClient } from 'aws-amplify/data';
 import { DateTime } from 'luxon';
+import { Platform } from 'react-native';
 import outputs from '../amplify_outputs.json';
 
 const accountId = 'poc';
@@ -18,7 +20,6 @@ const accountId = 'poc';
 Amplify.configure(outputs);
 const client = generateClient<Schema>();
 const tableNames = Object.keys(client.models) as (keyof Schema)[];
-console.log(tableNames);
 
 // Amplify Plugin
 interface SyncedAmplifyProps<T extends keyof Schema> {
@@ -27,8 +28,10 @@ interface SyncedAmplifyProps<T extends keyof Schema> {
 }
 
 // Type helpers for better type inference
-type SchemaModelType<T extends keyof Schema> = Schema[T]['type'];
-type SchemaModelInput<T extends keyof Schema> = Partial<SchemaModelType<T>> & {
+export type SchemaModelType<T extends keyof Schema> = Schema[T]['type'];
+export type SchemaModelInput<T extends keyof Schema> = Partial<
+  SchemaModelType<T>
+> & {
   id?: string;
 };
 
@@ -138,10 +141,15 @@ export const syncedAmplify = <T extends keyof Schema>({
       return saved;
     },
     persist: {
-      plugin: observablePersistIndexedDB({
-        databaseName: 'poc',
-        version: 2,
-        tableNames,
+      plugin: Platform.select<any>({
+        native: observablePersistMMKV({
+          id: 'poc',
+        }),
+        web: observablePersistIndexedDB({
+          databaseName: 'poc',
+          version: 2,
+          tableNames,
+        }),
       }),
       name,
       retrySync: true,

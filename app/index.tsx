@@ -1,10 +1,10 @@
-import { data$, isAuthed$ } from '@/methods/Amplify';
-import { batch } from '@legendapp/state';
+import { data$, isAuthed$, SchemaModelType } from '@/methods/Amplify';
+import { batch, Observable } from '@legendapp/state';
 import { observer } from '@legendapp/state/react';
-import { FlashList } from '@shopify/flash-list';
+import { FlashList, ListRenderItem } from '@shopify/flash-list';
 import { fetchAuthSession, signIn, signOut } from 'aws-amplify/auth';
 import { DateTime } from 'luxon';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Button, ScrollView, Text, View } from 'react-native';
 import { uuid } from 'short-uuid';
 
@@ -22,35 +22,7 @@ const Page = observer(() => {
       <FlashList
         data={data$.Todo.list}
         extraData={data$.Todo.changed.get()}
-        keyExtractor={(item) => item.id.get()}
-        renderItem={({ item }) => {
-          const { title, createdAt, completed } = item;
-          return (
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                height: 40,
-                gap: 10,
-                padding: 10,
-              }}
-            >
-              <Text>{title.get()}</Text>
-              <Text>
-                {DateTime.fromISO(createdAt.get()!).toLocaleString(
-                  DateTime.DATETIME_SHORT_WITH_SECONDS
-                )}
-              </Text>
-              <Text
-                onPress={() => {
-                  completed.set((prev) => !prev);
-                }}
-              >
-                {completed.get() ? '✅' : '⬜️'}
-              </Text>
-            </View>
-          );
-        }}
+        renderItem={renderItem}
       />
       <Footer />
     </View>
@@ -58,6 +30,34 @@ const Page = observer(() => {
 });
 
 export default Page;
+
+const renderItem: ListRenderItem<Observable<SchemaModelType<'Todo'>>> = ({
+  item: todo$,
+}) => (
+  <View
+    style={{
+      flexDirection: 'row',
+      alignItems: 'center',
+      height: 40,
+      gap: 10,
+      padding: 10,
+    }}
+  >
+    <Text>{todo$.title.get()}</Text>
+    <Text>
+      {DateTime.fromISO(todo$.createdAt.get()!).toLocaleString(
+        DateTime.DATETIME_SHORT_WITH_SECONDS
+      )}
+    </Text>
+    <Text
+      onPress={() => {
+        todo$.completed.set((prev) => !prev);
+      }}
+    >
+      {todo$.completed.get() ? '✅' : '⬜️'}
+    </Text>
+  </View>
+);
 
 const Worker = () => {
   useEffect(() => {
@@ -138,6 +138,8 @@ const Menu = observer(() => {
 });
 
 const Footer = observer(() => {
+  const renderCount = useRef(1).current++;
+
   return (
     <View
       style={{
@@ -147,6 +149,7 @@ const Footer = observer(() => {
         backgroundColor: 'lightgray',
       }}
     >
+      <Text>Render: {renderCount}</Text>
       <Text>Authed: {isAuthed$.get() ? 'Yes' : 'No'}</Text>
       <Text>
         Synced:{' '}

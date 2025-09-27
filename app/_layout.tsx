@@ -16,7 +16,7 @@ const RootLayout = observer(() => {
   }, [ready]);
 
   return (
-    ready && !firstRender && <Stack screenOptions={{ headerShown: false }} />
+    ready && !firstRender && <Stack screenOptions={{ title: 'Legend POC' }} />
   );
 });
 
